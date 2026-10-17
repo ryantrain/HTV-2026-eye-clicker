@@ -166,7 +166,9 @@ app.whenReady().then(() => {
       try {
         const { mouse, Point, Button } = await import('@nut-tree-fork/nut-js');
         if (!enabled || generation !== inputGeneration) return;
-        const { bounds } = display;
+        // Map against the overlay's real bounds: the OS may shift or shrink the window
+        // (e.g. below the macOS menu bar), and calibration targets were drawn inside it.
+        const bounds = window.getContentBounds();
         await mouse.setPosition(
           new Point(
             Math.round(bounds.x + x * (bounds.width - 1)),

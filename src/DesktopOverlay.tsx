@@ -41,6 +41,7 @@ export function DesktopOverlay() {
     guard: new BlinkGuard(),
     baseline: { left: 0, right: 0 },
     baselineSamples: [] as { left: number; right: number }[],
+    baselineSteps: [] as { left: number; right: number }[],
     cursor: { x: 0.5, y: 0.5 },
     frozen: false,
     last: 0,
@@ -87,6 +88,7 @@ export function DesktopOverlay() {
     r.filter = new GazeFilter();
     r.calibration = new ScreenCalibration();
     r.baselineSamples = [];
+    r.baselineSteps = [];
     setStep(0);
     setProgress(0);
     transition(
@@ -208,27 +210,35 @@ export function DesktopOverlay() {
                 }
               }
               if (r.phase === 'calibrating' && vector) {
-                if (r.calibration.step === 0)
-                  r.baselineSamples.push({
-                    left: score('eyeBlinkLeft'),
-                    right: score('eyeBlinkRight'),
-                  });
+                r.baselineSamples.push({
+                  left: score('eyeBlinkLeft'),
+                  right: score('eyeBlinkRight'),
+                });
                 const previousStep = r.calibration.step;
                 const result = r.calibration.update(vector, now);
                 if (
-                  previousStep === 0 &&
-                  r.calibration.step === 1 &&
+                  r.calibration.step !== previousStep &&
                   r.baselineSamples.length
                 ) {
                   const median = (axis: 'left' | 'right') =>
                     r.baselineSamples.map((p) => p[axis]).sort((a, b) => a - b)[
                       Math.floor(r.baselineSamples.length / 2)
                     ];
-                  r.baseline = { left: median('left'), right: median('right') };
+                  r.baselineSteps.push({
+                    left: median('left'),
+                    right: median('right'),
+                  });
+                  r.baselineSamples = [];
+                  // Lids droop when looking down; use the most-closed open-eye pose as the
+                  // baseline so low targets do not read as blinks and freeze the cursor.
+                  r.baseline = {
+                    left: Math.max(...r.baselineSteps.map((p) => p.left)),
+                    right: Math.max(...r.baselineSteps.map((p) => p.right)),
+                  };
                   r.guard = new BlinkGuard(r.baseline);
                 }
                 setMessage(
-                  `Collecting gaze samples: ${r.calibration.samples.length} / 8 minimum. Keep looking at the glowing target.`,
+                  'Keep looking at the glowing target with your eyes only.',
                 );
                 setProgress(result.progress);
                 setStep(
@@ -365,7 +375,16 @@ export function DesktopOverlay() {
         phase === 'paused' ||
         phase === 'error' ||
         phase === 'calibration-failed') && (
-        <section className="overlay-instructions" role="status">
+        <section
+          className="overlay-instructions"
+          role="status"
+          // Keep the text away from the target so reading it does not pull the gaze.
+          style={
+            calibrating
+              ? { top: calibrationTargets[step].y >= 0.5 ? '22%' : '78%' }
+              : undefined
+          }
+        >
           <div className="overlay-wordmark">◉ omniaccess</div>
           <span className="overlay-kicker">
             {calibrating
@@ -394,7 +413,7 @@ export function DesktopOverlay() {
               <progress value={progress} max={1} />
               <p>
                 {face
-                  ? 'Hold your gaze. Each target takes about four seconds.'
+                  ? 'Hold your gaze. Each target takes about two seconds.'
                   : 'Looking for your face…'}
               </p>
             </>

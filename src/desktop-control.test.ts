@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => {
     show: vi.fn(),
     focus: vi.fn(),
     showInactive: vi.fn(),
+    getContentBounds: () => mocks.display.bounds,
   };
   return {
     handlers,

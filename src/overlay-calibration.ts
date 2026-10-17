@@ -50,68 +50,108 @@ export function projectGaze(point: Point, fit: ScreenFit): Point {
     y: fit.y.reduce((n, v, i) => n + v * row[i], 0),
   };
 }
+// Screen-fraction limits: a target further off than this is treated as a bad sample,
+// and a mapping whose cross-validated error exceeds the RMS limit is unusable.
+const outlierError = 0.2;
+const maxRmsError = 0.15;
+const minPoints = 10;
+// Small ridge on the curved terms keeps the quadratic from bending wildly at the edges.
+const ridge = 0.1;
+function fitPoints(
+  samples: Point[],
+  indices: number[],
+  size: number,
+): ScreenFit | null {
+  const used = indices.map((i) => samples[i]);
+  const min = {
+    x: Math.min(...used.map((p) => p.x)),
+    y: Math.min(...used.map((p) => p.y)),
+  };
+  const max = {
+    x: Math.max(...used.map((p) => p.x)),
+    y: Math.max(...used.map((p) => p.y)),
+  };
+  // Normalize small iris movements so the solver works on well-scaled numbers.
+  const scale = { x: (max.x - min.x) / 2, y: (max.y - min.y) / 2 };
+  if (scale.x < 1e-8 || scale.y < 1e-8) return null;
+  const center = { x: (max.x + min.x) / 2, y: (max.y + min.y) / 2 };
+  const rows = used.map((p) =>
+    features((p.x - center.x) / scale.x, (p.y - center.y) / scale.y).slice(
+      0,
+      size,
+    ),
+  );
+  const matrix = Array.from({ length: size }, (_, i) =>
+    Array.from(
+      { length: size },
+      (_, j) =>
+        rows.reduce((n, r) => n + r[i] * r[j], 0) +
+        (i === j && i >= 3 ? ridge : 0),
+    ),
+  );
+  const coefficients = (axis: 'x' | 'y') =>
+    solve(
+      matrix,
+      Array.from({ length: size }, (_, i) =>
+        rows.reduce(
+          (n, row, j) => n + row[i] * calibrationTargets[indices[j]][axis],
+          0,
+        ),
+      ),
+    );
+  const x = coefficients('x'),
+    y = coefficients('y');
+  if (!x || !y || [...x, ...y].some((v) => !Number.isFinite(v))) return null;
+  // Reject near-collinear samples: the affine part must span both screen axes.
+  if (Math.abs(x[1] * y[2] - x[2] * y[1]) < 1e-3) return null;
+  return { center, scale, x, y };
+}
+// Leave-one-out error: how well each target is predicted by a fit that never saw it.
+function crossValidate(samples: Point[], indices: number[], size: number) {
+  const errors: number[] = [];
+  for (const held of indices) {
+    const fit = fitPoints(
+      samples,
+      indices.filter((i) => i !== held),
+      size,
+    );
+    if (!fit) return null;
+    const predicted = projectGaze(samples[held], fit),
+      target = calibrationTargets[held];
+    const error = Math.hypot(predicted.x - target.x, predicted.y - target.y);
+    if (!Number.isFinite(error)) return null;
+    errors.push(error);
+  }
+  return {
+    errors,
+    rms: Math.sqrt(errors.reduce((n, e) => n + e * e, 0) / errors.length),
+  };
+}
 export function fitCalibration(samples: Point[]): ScreenFit | null {
   if (
     samples.length !== calibrationTargets.length ||
     samples.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y))
   )
     return null;
-  const training = samples.slice(0, 9);
-  const min = {
-    x: Math.min(...training.map((p) => p.x)),
-    y: Math.min(...training.map((p) => p.y)),
-  };
-  const max = {
-    x: Math.max(...training.map((p) => p.x)),
-    y: Math.max(...training.map((p) => p.y)),
-  };
-  const scale = { x: (max.x - min.x) / 2, y: (max.y - min.y) / 2 };
-  // Normalize small iris movements before fitting; screen-space validation decides accuracy.
-  if (scale.x < 1e-8 || scale.y < 1e-8) return null;
-  const center = { x: (max.x + min.x) / 2, y: (max.y + min.y) / 2 };
-  const rows = training.map((p) =>
-    features((p.x - center.x) / scale.x, (p.y - center.y) / scale.y),
-  );
-  let best: ScreenFit | null = null;
-  let bestError = Infinity;
-  // Select on held-out targets: a quadratic must improve on the less noisy affine fit.
-  for (const size of [3, 6]) {
-    const matrix = Array.from({ length: size }, (_, i) =>
-      Array.from({ length: size }, (_, j) =>
-        rows.reduce((n, r) => n + r[i] * r[j], 0),
-      ),
-    );
-    const coefficients = (axis: 'x' | 'y') =>
-      solve(
-        matrix,
-        Array.from({ length: size }, (_, i) =>
-          rows.reduce(
-            (n, row, j) => n + row[i] * calibrationTargets[j][axis],
-            0,
-          ),
-        ),
-      );
-    const x = coefficients('x'),
-      y = coefficients('y');
-    if (!x || !y) continue;
-    const fit = { center, scale, x, y };
-    // Independent check points catch bad fits that simply memorize the calibration targets.
-    const errors = samples.map((p, i) => {
-      const predicted = projectGaze(p, fit),
-        target = calibrationTargets[i];
-      return Math.hypot(predicted.x - target.x, predicted.y - target.y);
-    });
-    const checkError = Math.sqrt(
-      errors.slice(9).reduce((n, e) => n + e * e, 0) / 4,
-    );
-    if (errors.some((e) => !Number.isFinite(e) || e > 0.16) || checkError > 0.1)
-      continue;
-    if (checkError < bestError) {
-      best = fit;
-      bestError = checkError;
+  let indices = samples.map((_, i) => i);
+  for (;;) {
+    let best: { size: number; errors: number[]; rms: number } | null = null;
+    // The quadratic must beat the affine fit on held-out targets to be chosen.
+    for (const size of indices.length >= minPoints ? [3, 6] : [3]) {
+      const result = crossValidate(samples, indices, size);
+      if (result && (!best || result.rms < best.rms))
+        best = { size, ...result };
     }
+    if (!best) return null;
+    const worst = best.errors.indexOf(Math.max(...best.errors));
+    // Drop a single bad target (a glance away, a blink) instead of failing the pass.
+    if (best.errors[worst] > outlierError && indices.length > minPoints) {
+      indices = indices.filter((_, i) => i !== worst);
+      continue;
+    }
+    if (best.rms > maxRmsError) return null;
+    return fitPoints(samples, indices, best.size);
   }
-  return best;
 }
 const median = (values: number[]) =>
   [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];

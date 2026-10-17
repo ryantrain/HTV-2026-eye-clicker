@@ -6,7 +6,7 @@ import {
   fitCalibration,
   projectGaze,
 } from './overlay-calibration';
-it('fits cross-axis gaze and independently validates all four check points', () => {
+it('fits cross-axis gaze and discards a single bad target', () => {
   const samples = calibrationTargets.map((t) => ({
     x: 0.8 - 0.4 * t.x + 0.06 * t.y,
     y: 0.2 + 0.35 * t.y + 0.04 * t.x,
@@ -21,7 +21,9 @@ it('fits cross-axis gaze and independently validates all four check points', () 
   expect(point.y).toBeCloseTo(0.68);
   const bad = samples.map((p) => ({ ...p }));
   bad[10].x += 0.15;
-  expect(fitCalibration(bad)).toBeNull();
+  const robust = fitCalibration(bad)!;
+  expect(robust).not.toBeNull();
+  expect(projectGaze(samples[10], robust).x).toBeCloseTo(0.73);
   expect(fitCalibration(Array(13).fill({ x: 0.5, y: 0.5 }))).toBeNull();
 });
 it('rejects singular fits and supports nonlinear calibration', () => {
@@ -95,7 +97,7 @@ it('recovers from initial movement using recent stable samples', () => {
   expect(c.points[0].x).toBeCloseTo(0.5);
 });
 
-it('accepts small consistent iris movements and still rejects inaccurate check points', () => {
+it('accepts small consistent iris movements and ignores one inaccurate target', () => {
   const samples = calibrationTargets.map(({ x, y }) => ({
     x: 0.5 + (x - 0.5) * 0.02,
     y: 0.5 + (y - 0.5) * 0.008,
@@ -105,8 +107,49 @@ it('accepts small consistent iris movements and still rejects inaccurate check p
   const predicted = projectGaze({ x: 0.497, y: 0.5012 }, fit!);
   expect(predicted.x).toBeCloseTo(0.35);
   expect(predicted.y).toBeCloseTo(0.65);
-  samples[10].y += 0.004;
-  expect(fitCalibration(samples)).toBeNull();
+  const good = samples[10];
+  samples[10] = { ...good, y: good.y + 0.004 };
+  const robust = fitCalibration(samples)!;
+  expect(robust).not.toBeNull();
+  expect(projectGaze(good, robust).y).toBeCloseTo(0.275);
+});
+
+// Deterministic pseudo-random noise so the webcam simulation is repeatable.
+function noise(seed: number) {
+  return () => {
+    seed = (seed * 16807) % 2147483647;
+    return (seed / 2147483647 - 0.5) * 2;
+  };
+}
+
+it('calibrates with realistic webcam noise on a small vertical iris range', () => {
+  const random = noise(7);
+  const eye = (x: number, y: number) => ({
+    x: 0.5 - (x - 0.5) * 0.16 + 0.01 * (y - 0.5),
+    y: 0.5 + (y - 0.5) * 0.05 - 0.01 * (x - 0.5) ** 2,
+  });
+  for (let trial = 0; trial < 50; trial++) {
+    const fit = fitCalibration(
+      calibrationTargets.map(({ x, y }) => {
+        const p = eye(x, y);
+        return { x: p.x + 0.008 * random(), y: p.y + 0.008 * random() };
+      }),
+    );
+    expect(fit).not.toBeNull();
+    const predicted = projectGaze(eye(0.3, 0.7), fit!);
+    expect(Math.hypot(predicted.x - 0.3, predicted.y - 0.7)).toBeLessThan(0.15);
+  }
+});
+
+it('rejects samples that carry no gaze information', () => {
+  const random = noise(11);
+  const fit = fitCalibration(
+    calibrationTargets.map(() => ({
+      x: 0.5 + 0.02 * random(),
+      y: 0.5 + 0.02 * random(),
+    })),
+  );
+  expect(fit).toBeNull();
 });
 
 it('advances the first target in two seconds on a 5 FPS camera', () => {
