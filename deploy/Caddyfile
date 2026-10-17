@@ -1,0 +1,5 @@
+{$OMNI_DOMAIN} {
+  encode gzip
+  header Permissions-Policy "camera=(self), microphone=()"
+  reverse_proxy app:8787
+}

@@ -144,3 +144,6 @@ vite.config.ts.timestamp-*
 
 # Electron-Forge
 out/
+
+# Generated from MediaPipe by the renderer Vite config
+public/wasm/

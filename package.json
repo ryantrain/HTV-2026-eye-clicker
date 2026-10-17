@@ -20,7 +20,12 @@
     "lint:fix": "oxlint --fix && oxfmt --write",
     "typecheck": "tsc --noEmit",
     "dev": "electron-forge start",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run && npm run test:api",
+    "web:dev": "vite --config vite.renderer.config.mts",
+    "web:build": "vite build --config vite.renderer.config.mts",
+    "server": "node --env-file-if-exists=.env server/index.mjs",
+    "demo": "npm run web:build && npm run server",
+    "test:api": "node --test server/*.test.mjs"
   },
   "devDependencies": {
     "@electron-forge/cli": "^8.0.1",
@@ -47,9 +52,11 @@
     "vitest": "^4.1.11"
   },
   "dependencies": {
+    "@google/genai": "^2.30.0",
     "@mediapipe/tasks-vision": "^1.1.1",
     "@nut-tree-fork/nut-js": "^4.2.6",
     "electron-squirrel-startup": "^1.0.1",
+    "pg": "^8.23.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   }
