@@ -1,5 +1,11 @@
 import type { Point } from './tracking';
-export const calibrationTargets = [
+export type CalibrationTarget = {
+  name: string;
+  x: number;
+  y: number;
+  prompt?: string;
+};
+export const calibrationTargets: CalibrationTarget[] = [
   { name: 'center', x: 0.5, y: 0.5 },
   { name: 'left edge', x: 0.04, y: 0.5 },
   { name: 'right edge', x: 0.96, y: 0.5 },
@@ -13,14 +19,48 @@ export const calibrationTargets = [
   { name: 'upper right check point', x: 0.73, y: 0.275 },
   { name: 'lower left check point', x: 0.27, y: 0.725 },
   { name: 'lower right check point', x: 0.73, y: 0.725 },
+  // Eyes stay on the dot while the head moves, which teaches the fit to cancel head pose.
+  ...(['left', 'right', 'up', 'down'] as const).map((direction) => ({
+    name: `center, head turned ${direction}`,
+    x: 0.5,
+    y: 0.5,
+    prompt: `Keep looking at the dot and turn your head slightly ${direction}`,
+  })),
 ];
+// Eye-in-head gaze (x, y) plus optional head rotation and face position in the image.
+export type GazeSample = Point & { head?: Point; face?: Point };
 export type ScreenFit = {
   center: Point;
   scale: Point;
+  head: Point;
+  face: Point;
   x: number[];
   y: number[];
 };
-const features = (x: number, y: number) => [1, x, y, x * y, x * x, y * y];
+// Fixed scales keep a head that barely moved during calibration from being amplified into a signal.
+const headScale = 0.05;
+const faceScale = 0.05;
+const origin = { x: 0, y: 0 };
+const affineSize = 7;
+const quadraticSize = 10;
+function features(p: GazeSample, fit: Omit<ScreenFit, 'x' | 'y'>) {
+  const u = (p.x - fit.center.x) / fit.scale.x,
+    v = (p.y - fit.center.y) / fit.scale.y,
+    head = p.head ?? origin,
+    face = p.face ?? origin;
+  return [
+    1,
+    u,
+    v,
+    (head.x - fit.head.x) / headScale,
+    (head.y - fit.head.y) / headScale,
+    (face.x - fit.face.x) / faceScale,
+    (face.y - fit.face.y) / faceScale,
+    u * v,
+    u * u,
+    v * v,
+  ];
+}
 function solve(matrix: number[][], values: number[]) {
   const rows = matrix.map((row, i) => [...row, values[i]]);
   const size = values.length;
@@ -40,11 +80,8 @@ function solve(matrix: number[][], values: number[]) {
   }
   return rows.map((row) => row[size]);
 }
-export function projectGaze(point: Point, fit: ScreenFit): Point {
-  const row = features(
-    (point.x - fit.center.x) / fit.scale.x,
-    (point.y - fit.center.y) / fit.scale.y,
-  );
+export function projectGaze(point: GazeSample, fit: ScreenFit): Point {
+  const row = features(point, fit);
   return {
     x: fit.x.reduce((n, v, i) => n + v * row[i], 0),
     y: fit.y.reduce((n, v, i) => n + v * row[i], 0),
@@ -55,10 +92,17 @@ export function projectGaze(point: Point, fit: ScreenFit): Point {
 const outlierError = 0.2;
 const maxRmsError = 0.15;
 const minPoints = 10;
-// Small ridge on the curved terms keeps the quadratic from bending wildly at the edges.
-const ridge = 0.1;
+const maxDropped = 3;
+// Ridge only on head/face and curved terms: eye terms stay unshrunk so the mapping
+// is not pulled toward the screen center, while unused head terms stay near zero
+// and the quadratic cannot bend wildly at the edges.
+const ridge = [0, 0, 0, 0.5, 0.5, 0.5, 0.5, 0.1, 0.1, 0.1];
+const mean = (points: Point[]) => ({
+  x: points.reduce((n, p) => n + p.x, 0) / points.length,
+  y: points.reduce((n, p) => n + p.y, 0) / points.length,
+});
 function fitPoints(
-  samples: Point[],
+  samples: GazeSample[],
   indices: number[],
   size: number,
 ): ScreenFit | null {
@@ -74,19 +118,18 @@ function fitPoints(
   // Normalize small iris movements so the solver works on well-scaled numbers.
   const scale = { x: (max.x - min.x) / 2, y: (max.y - min.y) / 2 };
   if (scale.x < 1e-8 || scale.y < 1e-8) return null;
-  const center = { x: (max.x + min.x) / 2, y: (max.y + min.y) / 2 };
-  const rows = used.map((p) =>
-    features((p.x - center.x) / scale.x, (p.y - center.y) / scale.y).slice(
-      0,
-      size,
-    ),
-  );
+  const normalization = {
+    center: { x: (max.x + min.x) / 2, y: (max.y + min.y) / 2 },
+    scale,
+    head: mean(used.map((p) => p.head ?? origin)),
+    face: mean(used.map((p) => p.face ?? origin)),
+  };
+  const rows = used.map((p) => features(p, normalization).slice(0, size));
   const matrix = Array.from({ length: size }, (_, i) =>
     Array.from(
       { length: size },
       (_, j) =>
-        rows.reduce((n, r) => n + r[i] * r[j], 0) +
-        (i === j && i >= 3 ? ridge : 0),
+        rows.reduce((n, r) => n + r[i] * r[j], 0) + (i === j ? ridge[i] : 0),
     ),
   );
   const coefficients = (axis: 'x' | 'y') =>
@@ -102,12 +145,12 @@ function fitPoints(
   const x = coefficients('x'),
     y = coefficients('y');
   if (!x || !y || [...x, ...y].some((v) => !Number.isFinite(v))) return null;
-  // Reject near-collinear samples: the affine part must span both screen axes.
+  // Reject near-collinear samples: the eye terms must span both screen axes.
   if (Math.abs(x[1] * y[2] - x[2] * y[1]) < 1e-3) return null;
-  return { center, scale, x, y };
+  return { ...normalization, x, y };
 }
 // Leave-one-out error: how well each target is predicted by a fit that never saw it.
-function crossValidate(samples: Point[], indices: number[], size: number) {
+function crossValidate(samples: GazeSample[], indices: number[], size: number) {
   const errors: number[] = [];
   for (const held of indices) {
     const fit = fitPoints(
@@ -127,17 +170,26 @@ function crossValidate(samples: Point[], indices: number[], size: number) {
     rms: Math.sqrt(errors.reduce((n, e) => n + e * e, 0) / errors.length),
   };
 }
-export function fitCalibration(samples: Point[]): ScreenFit | null {
+export function fitCalibration(samples: GazeSample[]): ScreenFit | null {
   if (
     samples.length !== calibrationTargets.length ||
-    samples.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y))
+    samples.some((p) =>
+      [
+        p.x,
+        p.y,
+        p.head?.x ?? 0,
+        p.head?.y ?? 0,
+        p.face?.x ?? 0,
+        p.face?.y ?? 0,
+      ].some((v) => !Number.isFinite(v)),
+    )
   )
     return null;
   let indices = samples.map((_, i) => i);
-  for (;;) {
+  for (let dropped = 0; ; dropped++) {
     let best: { size: number; errors: number[]; rms: number } | null = null;
     // The quadratic must beat the affine fit on held-out targets to be chosen.
-    for (const size of indices.length >= minPoints ? [3, 6] : [3]) {
+    for (const size of [affineSize, quadraticSize]) {
       const result = crossValidate(samples, indices, size);
       if (result && (!best || result.rms < best.rms))
         best = { size, ...result };
@@ -145,7 +197,11 @@ export function fitCalibration(samples: Point[]): ScreenFit | null {
     if (!best) return null;
     const worst = best.errors.indexOf(Math.max(...best.errors));
     // Drop a single bad target (a glance away, a blink) instead of failing the pass.
-    if (best.errors[worst] > outlierError && indices.length > minPoints) {
+    if (
+      best.errors[worst] > outlierError &&
+      dropped < maxDropped &&
+      indices.length > minPoints
+    ) {
       indices = indices.filter((_, i) => i !== worst);
       continue;
     }
@@ -166,13 +222,13 @@ export function calibrationEyesOpen(left: number, right: number) {
 export class ScreenCalibration {
   step = 0;
   since: number | null = null;
-  samples: Point[] = [];
-  points: Point[] = [];
+  samples: GazeSample[] = [];
+  points: GazeSample[] = [];
   private elapsed = 0;
   private last: number | null = null;
   private missingSince: number | null = null;
   update(
-    point: Point | null,
+    point: GazeSample | null,
     now: number,
   ): {
     progress: number;
@@ -219,10 +275,11 @@ export class ScreenCalibration {
           Math.hypot(b.x - center.x, b.y - center.y),
       );
       const stable = sorted.slice(0, Math.ceil(sorted.length * 0.8));
-      const average = {
-        x: stable.reduce((n, p) => n + p.x, 0) / stable.length,
-        y: stable.reduce((n, p) => n + p.y, 0) / stable.length,
-      };
+      const average: GazeSample = mean(stable);
+      if (stable.every((p) => p.head))
+        average.head = mean(stable.map((p) => p.head!));
+      if (stable.every((p) => p.face))
+        average.face = mean(stable.map((p) => p.face!));
       if (
         stable.some((p) => Math.hypot(p.x - average.x, p.y - average.y) > 0.06)
       ) {

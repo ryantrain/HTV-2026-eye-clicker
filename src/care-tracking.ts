@@ -70,6 +70,29 @@ export function eyeVector(points: NormalizedLandmark[]): Point | null {
   if (!l || !r) return null;
   return { x: (l.x + r.x) / 2, y: (l.y + r.y) / 2 };
 }
+// Head rotation as the nose-tip offset from the eye line, in units of eye spacing and
+// rotated into the eye frame so roll is ignored; face is the eye midpoint in the image.
+export function headPose(
+  points: NormalizedLandmark[],
+): { head: Point; face: Point } | null {
+  if (points.length < 478) return null;
+  const a = points[33],
+    b = points[263],
+    nose = points[1];
+  const dx = b.x - a.x,
+    dy = b.y - a.y,
+    width = Math.hypot(dx, dy);
+  if (!Number.isFinite(width) || width < 0.01) return null;
+  const face = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  const ox = nose.x - face.x,
+    oy = nose.y - face.y;
+  const head = {
+    x: (ox * dx + oy * dy) / (width * width),
+    y: (-ox * dy + oy * dx) / (width * width),
+  };
+  if (![head.x, head.y, face.x, face.y].every(Number.isFinite)) return null;
+  return { head, face };
+}
 export function eyeGaze(points: NormalizedLandmark[]): Point | null {
   const vector = eyeVector(points);
   if (!vector) return null;

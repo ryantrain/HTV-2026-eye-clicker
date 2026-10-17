@@ -4,6 +4,7 @@ import {
   GazeFilter,
   eyeGaze,
   eyeVector,
+  headPose,
   LandmarkEMA,
 } from './care-tracking';
 import {
@@ -120,4 +121,29 @@ it('calibrates and tracks vertical gaze even when the lids follow the iris', () 
   const invalid = frame(0.5, 0.5);
   invalid[468].x = NaN;
   expect(eyeVector(invalid)).toBeNull();
+});
+
+it('measures head turn independently of in-plane roll', () => {
+  const points = Array.from({ length: 478 }, () => ({
+    x: 0.5,
+    y: 0.5,
+    z: 0,
+    visibility: 1,
+  }));
+  points[33] = { ...points[33], x: 0.4 };
+  points[263] = { ...points[263], x: 0.6 };
+  points[1] = { ...points[1], x: 0.52, y: 0.58 };
+  const pose = headPose(points)!;
+  expect(pose.head.x).toBeCloseTo(0.1);
+  expect(pose.head.y).toBeCloseTo(0.4);
+  expect(pose.face).toEqual({ x: 0.5, y: 0.5 });
+  const theta = 0.3;
+  const rolled = points.map((p) => ({
+    ...p,
+    x: (p.x - 0.5) * Math.cos(theta) - (p.y - 0.5) * Math.sin(theta) + 0.5,
+    y: (p.x - 0.5) * Math.sin(theta) + (p.y - 0.5) * Math.cos(theta) + 0.5,
+  }));
+  expect(headPose(rolled)!.head.x).toBeCloseTo(0.1);
+  expect(headPose(rolled)!.head.y).toBeCloseTo(0.4);
+  expect(headPose([])).toBeNull();
 });

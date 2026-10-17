@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest';
+import type { Point } from './tracking';
 import {
   ScreenCalibration,
   calibrationTargets,
@@ -24,7 +25,9 @@ it('fits cross-axis gaze and discards a single bad target', () => {
   const robust = fitCalibration(bad)!;
   expect(robust).not.toBeNull();
   expect(projectGaze(samples[10], robust).x).toBeCloseTo(0.73);
-  expect(fitCalibration(Array(13).fill({ x: 0.5, y: 0.5 }))).toBeNull();
+  expect(
+    fitCalibration(calibrationTargets.map(() => ({ x: 0.5, y: 0.5 }))),
+  ).toBeNull();
 });
 it('rejects singular fits and supports nonlinear calibration', () => {
   const fit = fitCalibration(
@@ -42,11 +45,11 @@ it('uses the affine fit when a noisy training target makes the curve less accura
   samples[0].x += 0.16;
   const fit = fitCalibration(samples);
   expect(fit).not.toBeNull();
-  expect(fit!.x).toHaveLength(3);
+  expect(fit!.x).toHaveLength(7);
   const predicted = projectGaze({ x: 0.35, y: 0.65 }, fit!);
   expect(Math.hypot(predicted.x - 0.35, predicted.y - 0.65)).toBeLessThan(0.04);
 });
-it('pauses on brief gaps, resets prolonged loss, and collects all 13 targets', () => {
+it('pauses on brief gaps, resets prolonged loss, and collects every target', () => {
   const c = new ScreenCalibration();
   for (let now = 0; now <= 1800; now += 30) c.update({ x: 0.2, y: 0.5 }, now);
   const count = c.samples.length;
@@ -57,7 +60,7 @@ it('pauses on brief gaps, resets prolonged loss, and collects all 13 targets', (
   c.update(null, 3500);
   expect(c.samples).toEqual([]);
   let now = 4000;
-  for (let step = 0; step < 13; step++) {
+  for (let step = 0; step < calibrationTargets.length; step++) {
     let frames = 0;
     while (c.step === step && frames++ < 200) {
       c.update({ x: step / 20, y: step / 20 }, now);
@@ -65,7 +68,7 @@ it('pauses on brief gaps, resets prolonged loss, and collects all 13 targets', (
     }
     expect(c.step).toBe(step + 1);
   }
-  expect(c.points).toHaveLength(13);
+  expect(c.points).toHaveLength(calibrationTargets.length);
   const completed = c.points.map((point) => ({ ...point }));
   // Subsequent frames, including tracking loss, cannot reopen a completed pass.
   expect(c.update(null, now + 2000)).toEqual({
@@ -74,7 +77,7 @@ it('pauses on brief gaps, resets prolonged loss, and collects all 13 targets', (
     unstable: false,
   });
   expect(c.update({ x: 0.1, y: 0.1 }, now + 4000).done).toBe(true);
-  expect(c.step).toBe(13);
+  expect(c.step).toBe(calibrationTargets.length);
   expect(c.points).toEqual(completed);
 });
 it('allows normal open-eye scores that used to block center calibration', () => {
@@ -175,4 +178,32 @@ it('ends persistent noisy sampling with a failure instead of an endless first ta
     result = c.update({ x: (now / 30) % 2 ? 0.3 : 0.7, y: 0.5 }, now);
   expect(result!.failed).toBe(true);
   expect(c.step).toBe(0);
+});
+
+it('cancels head movement learned from the head-turn targets', () => {
+  const random = noise(3);
+  // Where the eyes point on screen depends on eye-in-head rotation plus head yaw/pitch.
+  const sample = (x: number, y: number, yaw: number, pitch: number) => ({
+    x: 0.5 - ((x - 0.5) * 0.6 - yaw) * 0.25 + 0.002 * random(),
+    y: 0.5 + ((y - 0.5) * 0.6 - pitch) * 0.08 + 0.002 * random(),
+    head: { x: yaw * 0.5, y: pitch * 0.5 },
+    face: { x: 0.5 + yaw * 0.05, y: 0.5 },
+  });
+  const turns: Record<string, Point> = {
+    left: { x: -0.15, y: 0 },
+    right: { x: 0.15, y: 0 },
+    up: { x: 0, y: -0.15 },
+    down: { x: 0, y: 0.15 },
+  };
+  const fit = fitCalibration(
+    calibrationTargets.map((t) => {
+      const turn = turns[t.name.split(' ').pop()!] ?? { x: 0, y: 0 };
+      // Small involuntary head motion on ordinary targets.
+      return sample(t.x, t.y, turn.x + 0.03 * (t.x - 0.5), turn.y);
+    }),
+  );
+  expect(fit).not.toBeNull();
+  // Head turned toward the top left corner, eyes making up the rest.
+  const predicted = projectGaze(sample(0.04, 0.05, -0.12, -0.1), fit!);
+  expect(Math.hypot(predicted.x - 0.04, predicted.y - 0.05)).toBeLessThan(0.06);
 });

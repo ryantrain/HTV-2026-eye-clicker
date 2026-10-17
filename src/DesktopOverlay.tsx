@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
-import { eyeVector, GazeFilter } from './care-tracking';
+import { eyeVector, GazeFilter, headPose } from './care-tracking';
 import type { Point } from './tracking';
 import { BlinkGuard } from './blink-guard';
 import {
@@ -139,7 +139,8 @@ export function DesktopOverlay() {
           outputFaceBlendshapes: true,
         });
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 640, height: 480 },
+          // More pixels across each eye gives finer iris positions.
+          video: { width: { ideal: 1280 }, height: { ideal: 720 } },
           audio: false,
         });
         if (r.disposed) {
@@ -190,7 +191,9 @@ export function DesktopOverlay() {
                 r.phase === 'calibrating'
                   ? !calibrationClosed
                   : !blinkState.frozen;
-              const vector = points && usable ? eyeVector(points) : null;
+              const eye = points && usable ? eyeVector(points) : null;
+              const pose = points && eye ? headPose(points) : null;
+              const vector = eye && pose ? { ...eye, ...pose } : null;
               if (!vector) {
                 if (r.phase === 'calibrating') {
                   const waiting = r.calibration.update(null, now);
@@ -238,7 +241,9 @@ export function DesktopOverlay() {
                   r.guard = new BlinkGuard(r.baseline);
                 }
                 setMessage(
-                  'Keep looking at the glowing target with your eyes only.',
+                  calibrationTargets[r.calibration.step]?.prompt
+                    ? 'Turn gently and hold still once turned. If you cannot move your head, just keep looking.'
+                    : 'Keep your head still and look at the glowing target.',
                 );
                 setProgress(result.progress);
                 setStep(
@@ -393,7 +398,8 @@ export function DesktopOverlay() {
           </span>
           <h1>
             {calibrating
-              ? `Look at the ${calibrationTargets[step].name}`
+              ? (calibrationTargets[step].prompt ??
+                `Look at the ${calibrationTargets[step].name}`)
               : phase === 'loading'
                 ? 'Let’s make the screen yours.'
                 : phase === 'permission'
