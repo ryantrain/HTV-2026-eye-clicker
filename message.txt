@@ -1,0 +1,91 @@
+Project Overview: OmniAccess
+
+OmniAccess is a universal, zero-touch web accessibility software layer designed for elderly and disabled individuals with motor impairments (e.g., Parkinson’s disease, advanced arthritis, cerebral palsy, or post-stroke tremors) who cannot interact with standard digital healthcare interfaces.
+By capturing raw video via a standard laptop webcam, the system processes a live firehose of geometric facial landmarks, filters out neurological spasticity in real-time, and surfaces a high-contrast, calibration-free Macro-Grid layout. Patients navigate and trigger multi-department clinical and quality-of-life work orders entirely hands-free using filtered gaze and subtle facial micro-expressions.
+
+🏛️ System Architecture & Framework Requirements
+
+To successfully qualify for all target sponsor prizes (Gemini API, Tiger Data, Vultr, GoDaddy), you will implement a distributed, high-performance architecture split across local edge processing and scalable cloud compute:
+                  ┌──────────────────────────────────────────────┐
+                  │                 CLIENT LAPTOP                │
+                  │  [Webcam Stream] ──► [MediaPipe Face Mesh]   │
+                  │                            │                 │
+                  │                  (60 FPS Raw Matrix)         │
+                  │                            ▼                 │
+                  │                    [Kalman Filter]           │
+                  └────────────────────────────┬─────────────────┘
+                                               │
+                                      (Smooth Coordinates)
+                                               ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                                   VULTR CLOUD                                   │
+│                                                                                 │
+│   ┌───────────────────────────┐                     ┌───────────────────────────┐
+│   │    TIGER DATA DATABASE    │                     │     FASTAPI BACKEND       │
+│   │                           │                     │                           │
+│   │ 🧬 High-Frequency Gaze    │◄──(Stream Metrics)──┤ 🧠 Intent Processing      │
+│   │    Telemetry              │                     │ 🛠️ Trigger Router         │
+│   │ ⏱️ Continuous Aggregates  │                     └─────────────┬─────────────┘
+│   │    for Live Analytics     │                                   │
+│   └───────────────────────────┘                        (Context + Prompt)
+│                                                                   ▼
+│                                                     ┌───────────────────────────┐
+│                                                     │    GOOGLE GEMINI API      │
+│                                                     │                           │
+│                                                     │ 🔮 Multimodal Contextual  │
+│                                                     │    Task Interpretation    │
+│                                                     └───────────────────────────┘
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+1. Frontend Client Layer (Edge Processing)
+
+• Core Libraries: Vanilla JavaScript or React.js, @mediapipe/face_mesh or @tensorflow-models/face-landmarks-detection.
+• Math & Filtering Engine: Local implementation of a Linear Kalman Filter or an exponential moving average (EMA) matrix built directly in JavaScript to process 468 3D facial coordinate vectors at 30-60 FPS locally on the browser.
+• UI Framework: High-contrast Tailwind CSS macro grid utilizing standard browser Web Audio API for local auditory user feedback.
+
+2. Backend Compute Layer (Hosted on Vultr)
+
+• Runtime Environment: Python (FastAPI) or Node.js (Express) deployed to a Vultr Cloud Compute Compute Instance (utilizing free credits).
+• Networking: WebSockets or high-throughput HTTP POST routes to stream real-time coordinate states and event triggers from the browser client down to the server seamlessly.
+
+3. High-Frequency Telemetry & Data Layer (Tiger Data / PostgreSQL)
+
+• Engine: Tiger Data (PostgreSQL extension optimized for time-series and continuous analytics).
+• Schema & Features:
+	• A relational user table mapping the patient's specific baseline threshold values.
+	• A high-frequency hyper-table tracking time-stamped streaming metrics (timestamp, patient_id, gaze_x, gaze_y, jitter_delta, blink_duration_ms).
+	• Continuous Aggregates configured to compile rolling rolling averages of blinking frequency (fatigue detection) and spatial dwell heatmaps over 5-minute intervals.
+
+4. Contextual Intelligence Routing Layer (Google Gemini API)
+
+• Model: Gemini 2.5 Flash or Gemini 2.5 Pro via the official Google Gen AI SDK.
+• Functionality: Orchestrates intent classification when a macro box is triggered. If a general "Assistance" box is stared at, the backend fetches surrounding context (current time, room snapshots, active medication schedules) and passes it to Gemini to parse into a highly targeted JSON work order object.
+
+🎬 The End-to-End User Experience (The Presentation Demo)
+
+When the hackathon judges walk up to your table, your demo will look like a highly polished, production-grade medical product deployed at yourcustomdomain.health (purchased via GoDaddy Registry).
+
+Step 1: Automatic Perspective & Posture Compensation
+
+You position a team member in front of the laptop camera. They purposefully slump to one side or sit crookedly in their chair. Instead of crashing, your frontend dashboard maps the 3D rotation matrix of their skull using MediaPipe, mathematically re-projecting the coordinate grid to offset their tilt. No annoying 9-point calibration dots are required.
+
+Step 2: Live Tremor and Jitter Dampening
+
+Your teammate deliberately shakes their head rapidly and mimics heavy muscle tremors (simulating Parkinson's or chorea).
+• On the screen, you display two visual markers: a Red Dot (representing the raw, chaotic, wild eye vector tracking data) and a Green Cursor (representing your filtered, perfectly stable output).
+• While the red dot flies off the screen, the green cursor remains firmly locked onto the targeted macro button thanks to your mathematical Kalman Filter.
+
+Step 3: Triggering a Quality-of-Life Macro
+
+The user stabilizes their gaze on a giant, high-contrast button labeled [RESTROOM] or [COMFORT] for a sustained 2-second dwell threshold. The selection is accompanied by a localized audio cue confirming the selection.
+
+Step 4: Intelligent Gemini Triaging & Handoff
+
+Behind the scenes, your frontend fires an event to your Vultr backend server. The backend grabs the raw intent along with room context data and sends it to the Gemini API. Gemini classifies the intent and formats an automated output ticket.
+
+Step 5: The Multi-Department Analytical Dashboard
+
+You pull up your secondary administrative web application window. The judges see a beautifully structured, incoming work-order card that was automatically populated and routed.
+• If the user stared at [COMFORT] and the ambient light sensor/time data indicates it's late evening, Gemini outputs: "Action Required: Patient needs extra bedding. Destination: Facilities/Maintenance Department."
+• Simultaneously, the judges watch a real-time, lag-free line chart powered by Tiger Data's Continuous Aggregates updating every single second, proving that you are monitoring the user's physical fatigue metrics without a single drop in database performance.
+Would you like to start building this by implementing the frontend Kalman Filter and MediaPipe eye-gaze tracking pipeline in JavaScript, or would you prefer the Vultr backend script that hooks into the Gemini API and Tiger Data? Let me know which foundational block you want to code first!
